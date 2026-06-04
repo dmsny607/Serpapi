@@ -116,7 +116,7 @@ app.post('/mcp', async (req, res) => {
         error: { code: -32000, message: error.message }
       });
     }
-  }
+  } 
 
   return res.status(400).json({
     jsonrpc: '2.0',
