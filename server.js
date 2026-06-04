@@ -1,0 +1,130 @@
+import express from 'express';
+
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
+const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+const PORT = process.env.PORT || 3000;
+
+if (!SERPAPI_KEY) {
+  throw new Error('Missing SERPAPI_KEY environment variable');
+}
+
+function authorized(req) {
+  if (!AUTH_TOKEN) return true;
+  const header = req.headers.authorization || '';
+  return header === `Bearer ${AUTH_TOKEN}`;
+}
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'serpapi-mcp-server' });
+});
+
+app.post('/mcp', async (req, res) => {
+  if (!authorized(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { method, params, id } = req.body || {};
+
+  if (method === 'initialize') {
+    return res.json({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        protocolVersion: '2024-11-05',
+        serverInfo: { name: 'serpapi-mcp-server', version: '1.0.0' },
+        capabilities: { tools: {} }
+      }
+    });
+  }
+
+  if (method === 'tools/list') {
+    return res.json({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        tools: [
+          {
+            name: 'serp_search',
+            description: 'Run a Google search via SerpAPI and return top organic results',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                q: { type: 'string', description: 'Search query' },
+                location: { type: 'string', description: 'Optional location, e.g. Austin,Texas,United States' },
+                num: { type: 'number', description: 'Number of results to return, max 10' }
+              },
+              required: ['q']
+            }
+          }
+        ]
+      }
+    });
+  }
+
+  if (method === 'tools/call' && params?.name === 'serp_search') {
+    try {
+      const { q, location, num = 5 } = params.arguments || {};
+      if (!q) {
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32602, message: 'Missing required argument: q' }
+        });
+      }
+
+      const limit = Math.max(1, Math.min(Number(num) || 5, 10));
+      const url = new URL('https://serpapi.com/search.json');
+      url.searchParams.set('engine', 'google');
+      url.searchParams.set('q', q);
+      url.searchParams.set('api_key', SERPAPI_KEY);
+      url.searchParams.set('num', String(limit));
+      if (location) url.searchParams.set('location', location);
+
+      const response = await fetch(url.toString());
+      const data = await response.json();
+
+      const organic = (data.organic_results || []).slice(0, limit).map((item, index) => ({
+        position: index + 1,
+        title: item.title,
+        link: item.link,
+        snippet: item.snippet || ''
+      }));
+
+      return res.json({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                search_metadata: data.search_metadata,
+                search_parameters: data.search_parameters,
+                organic_results: organic
+              }, null, 2)
+            }
+          ]
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32000, message: error.message }
+      });
+    }
+  }
+
+  return res.status(400).json({
+    jsonrpc: '2.0',
+    id,
+    error: { code: -32601, message: 'Method not found' }
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`serpapi-mcp-server listening on port ${PORT}`);
+});
